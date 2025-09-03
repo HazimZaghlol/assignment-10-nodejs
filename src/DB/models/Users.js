@@ -73,6 +73,21 @@ const UserSchema = new Schema(
       enum: Object.values(RoleEnum),
       default: RoleEnum.USER,
     },
+    profileImageLocal: {
+      type: String,
+      default: null,
+    },
+    profileImageHosted: {
+      secure_url: { type: String, default: null },
+      public_id: { type: String, default: null },
+    },
+    deletedAt: { type: Date, default: null },
+    devices: [
+      {
+        deviceId: { type: String, required: true },
+        lastLogin: { type: Date, default: Date.now },
+      },
+    ],
   },
   {
     timestamps: true,

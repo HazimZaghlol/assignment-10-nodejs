@@ -1,158 +1,11 @@
-import { compareSync, decryptPhone, encryptPhone, hashSync } from "../../../utils/crypto.utils.js";
+import { decryptPhone, encryptPhone } from "../../../utils/crypto.utils.js";
 import { User } from "../../../DB/models/Users.js";
-import { TokenBlacklist } from "../../../DB/models/blacklistedTokens.js";
-import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
-import crypto from "crypto";
-import { sendEmailEvent } from "../../../utils/send-Email.js";
 import mongoose from "mongoose";
 import { Message } from "../../../DB/models/Message.js";
-import { generateOTP } from "../../../utils/OTP.js";
-// *************************************** SignUp ***************************************
+import { clearFolderFromCloudinary, deleteFileFromCloudinary, deleteFolderFromCloudinary, uploadToCloudinary } from "../../../Common/services/cloudinary.service.js";
+import fs from "fs";
 
-export const SignUp = async (req, res) => {
-  const { firstName, lastName, email, password, phone, gender, age } = req.body;
 
-  if (!firstName || !lastName || !email || !password || !gender || !age) {
-    return res.status(400).json({ message: "Missing required fields" });
-  }
-
-  const existingUser = await User.findOne({ email });
-  if (existingUser) {
-    return res.status(409).json({ message: "User with this email already exists" });
-  }
-
-  const hashedPassword = await hashSync(password);
-
-  let encryptedPhone = null;
-  if (phone) {
-    encryptedPhone = encryptPhone(phone);
-  }
-
-  const otpPlain = generateOTP();
-  const confirmationOTP = await hashSync(otpPlain);
-
-  const user = new User({
-    firstName,
-    lastName,
-    email,
-    password: hashedPassword,
-    phone: encryptedPhone,
-    gender,
-    age,
-    otps: { confirmation: confirmationOTP },
-  });
-
-  await user.save();
-
-  sendEmailEvent({
-    to: user.email,
-    subject: "🎉 Welcome to Our App",
-    html: `
-        <h2>Hi ${user.firstName} 👋</h2>
-        <p>Thanks for signing up to our platform. We're excited to have you on board! 🚀</p>
-        <h3>OTP: ${otpPlain}</h3>
-        <p>Here are your details:</p>
-        <ul>
-          <li><strong>Full Name:</strong> ${user.fullName}</li>
-          <li><strong>Email:</strong> ${user.email}</li>
-          <li><strong>Gender:</strong> ${user.gender}</li>
-          <li><strong>Age:</strong> ${user.age}</li>
-        </ul>
-        <br/>
-        <p>Best regards,<br/>The Team</p>
-      `,
-  });
-
-  res.status(201).json({
-    message: "User created successfully",
-    user: {
-      id: user._id,
-      fullName: user.fullName,
-      email: user.email,
-      phone: encryptedPhone,
-      gender: user.gender,
-      age: user.age,
-    },
-  });
-};
-
-// *************************************** Confirm Password ***************************************
-export const ConfirmPassword = async (req, res, next) => {
-  const { email, otp } = req.body;
-  if (!otp || !email) {
-    return next({ status: 400, message: "Email and OTP are required" });
-  }
-
-  const user = await User.findOne({ email });
-  if (!user) {
-    return next({ status: 404, message: "User not found" });
-  }
-
-  const isMatch = await compareSync(otp, user.otps.confirmation);
-  if (!isMatch) {
-    return next({ status: 401, message: "Invalid OTP" });
-  }
-
-  user.isConfirmed = true;
-  user.otps.confirmation = undefined;
-  await user.save();
-
-  res.status(200).json({
-    message: "User confirmed successfully",
-    user: {
-      id: user._id,
-      fullName: user.fullName,
-      email: user.email,
-      phone: user.phone ? decryptPhone(user.phone) : null,
-      gender: user.gender,
-      age: user.age,
-      isConfirmed: user.isConfirmed,
-    },
-  });
-};
-
-// *************************************** SignIn ***************************************
-export const SignIn = async (req, res, next) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return next({ status: 400, message: "Email and password are required" });
-  }
-
-  const user = await User.findOne({ email });
-  if (!user) {
-    return res.status(404).json({ message: "User not found" });
-  }
-
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
-  const jti = crypto.randomUUID();
-  const token = jwt.sign({ userId: user._id, role: user.role }, process.env.JWT_SECRET, {
-    expiresIn: parseInt(process.env.JWT_EXPIRATION),
-    jwtid: jti,
-  });
-
-  const refreshToken = jwt.sign({ userId: user._id, Role: user.role }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: process.env.JWT_REFRESH_EXPIRATION || "7d",
-    jwtid: jti,
-  });
-
-  res.status(200).json({
-    token,
-    refreshToken,
-    user: {
-      id: user._id,
-      fullName: user.fullName,
-      email: user.email,
-      phone: user.phone ? decryptPhone(user.phone) : null,
-      gender: user.gender,
-      age: user.age,
-    },
-  });
-};
 // *************************************** Update  ***************************************
 export const UpdateUser = async (req, res) => {
   const userId = req.userId;
@@ -191,7 +44,15 @@ export const DeleteUser = async (req, res) => {
 
   session.startTransaction();
 
-  const user = await User.findByIdAndDelete(userId, { session });
+  // hard delete
+  // const user = await User.findByIdAndDelete(userId, { session });
+
+  // soft delete
+  const user = await User.findByIdAndUpdate(userId, { deletedAt: new Date(), devices: [] }, { new: true, session });
+
+  if (user.profileImageLocal) fs.unlinkSync(user.profileImageLocal);
+
+  if (user.profileImageHosted.public_id) await deleteFileFromCloudinary(user.profileImageHosted.public_id);
 
   if (!user) {
     await session.abortTransaction();
@@ -201,24 +62,12 @@ export const DeleteUser = async (req, res) => {
 
   await Message.deleteMany({ receiverId: userId }, { session });
 
+
+
   await session.commitTransaction();
   session.endSession();
 
-  return res.status(200).json({ message: "User and messages deleted successfully" });
-};
-
-// *************************************** Logout  ***************************************
-export const Logout = async (req, res) => {
-  if (!req.jti) {
-    return res.status(400).json({ message: "Token missing jti" });
-  }
-
-  await TokenBlacklist.create({
-    tokenId: req.jti,
-    expiresAt: new Date(req.tokenExp * 1000),
-  });
-
-  res.status(200).json({ message: "Logged out successfully" });
+  return res.status(200).json({ message: "User and messages deleted successfully. All tokens revoked." });
 };
 
 // *************************************** List Users  ***********************************
@@ -242,23 +91,6 @@ export const listUsers = async (req, res, next) => {
   });
 };
 
-// *************************************** Refresh Token  ***********************************
-export const refreshToken = async (req, res, next) => {
-  const { refreshtoken } = req.headers;
-
-  if (!refreshtoken) {
-    return next({ status: 400, message: "Token is required" });
-  }
-
-  const decoded = jwt.verify(refreshtoken, process.env.JWT_REFRESH_SECRET);
-  const newToken = jwt.sign({ userId: decoded.userId }, process.env.JWT_SECRET, {
-    expiresIn: parseInt(process.env.JWT_EXPIRATION),
-    jwtid: crypto.randomUUID(),
-  });
-
-  res.status(200).json({ token: newToken });
-};
-
 // *************************************** Get User Profile ***********************************
 export const getUserProfile = async (req, res, next) => {
   const { userId } = req.params;
@@ -274,82 +106,56 @@ export const getUserProfile = async (req, res, next) => {
     lastName: user.lastName,
   });
 };
+// *************************************** upload local files ***********************************
+export const uploadLocalFiles = async (req, res, next) => {
+  const { path } = req.file;
+  const userId = req.userId;
 
-// *************************************** Request Password Reset ***********************************
-export const requestPasswordReset = async (req, res, next) => {
-  const { email } = req.body;
-  if (!email) {
-    return next({ status: 400, message: "Email is required" });
-  }
-  const user = await User.findOne({ email });
-  if (!user) {
-    return next({ status: 404, message: "User not found" });
-  }
-  const otpPlain = generateOTP();
-  const resetOTP = await hashSync(otpPlain);
-  user.otps.resetPassword = resetOTP;
-  user.otps.resetPasswordExpires = Date.now() + 10 * 60 * 1000;
-  await user.save();
-  sendEmailEvent({
-    to: user.email,
-    subject: "Password Reset Request",
-    html: `<h2>Hi ${user.firstName}</h2><p>Your password reset OTP is: <strong>${otpPlain}</strong></p>`,
+  const user = await User.findByIdAndUpdate(userId, { profileImageLocal: path }, { new: true });
+
+  res.status(200).json({ message: "File uploaded successfully", user });
+};
+// *************************************** upload to cloud files ***********************************
+export const uploadCloudinaryFiles = async (req, res, next) => {
+  const { path } = req.file;
+  const userId = req.userId;
+
+  const { secure_url, public_id } = await uploadToCloudinary(path, {
+    folder: "Sarah_app/Users/Profiles",
   });
 
-  res.status(200).json({ message: "Password reset OTP sent to email" });
+  const uploadedResult = await User.findByIdAndUpdate(userId, { profileImageHosted: { secure_url, public_id } }, { new: true });
+
+  res.status(200).json({ message: "File uploaded successfully", uploadedResult });
 };
 
-// *************************************** Reset Password ***********************************
-export const resetPassword = async (req, res, next) => {
-  const { email, otp, newPassword } = req.body;
-  if (!email || !otp || !newPassword) {
-    return next({ status: 400, message: "Email, OTP, and new password are required" });
+// *************************************** delete file from cloud ***********************************
+export const deleteCloudinaryFile = async (req, res, next) => {
+  const { public_id } = req.body;
+  if (!public_id) {
+    return res.status(400).json({ message: "public_id is required" });
   }
-  const user = await User.findOne({ email });
-  if (!user) {
-    return next({ status: 404, message: "User not found" });
-  }
-
-  if (!user.otps.resetPassword || Date.now() > user.otps.resetPasswordExpires) {
-    return next({ status: 401, message: "OTP expired or not found" });
-  }
-
-  const isMatch = await compareSync(otp, user.otps.resetPassword);
-  if (!isMatch) {
-    return next({ status: 401, message: "Invalid OTP" });
-  }
-  user.password = await hashSync(newPassword);
-  user.otps.resetPassword = undefined;
-  user.otps.resetPasswordExpires = undefined;
-  await user.save();
-  res.status(200).json({ message: "Password reset successfully" });
+  const result = await deleteFileFromCloudinary(public_id);
+  res.status(200).json({ message: "File deleted successfully", result });
 };
 
-// *************************************** Update Password ***********************************
-export const updatePassword = async (req, res, next) => {
-  const userId = req.userId;
-  const { oldPassword, newPassword } = req.body;
-  if (!oldPassword || !newPassword) {
-    return res.status(400).json({ message: "Old and new password are required" });
-  }
-  const user = await User.findById(userId);
-  if (!user) {
-    return res.status(404).json({ message: "User not found" });
-  }
+// *************************************** clear folder from cloud ***********************************
+export const clearCloudinaryFolder = async (req, res, next) => {
+  const { folderPath } = req.body;
+  console.log(folderPath);
 
-  const isMatch = await compareSync(oldPassword, user.password);
-  if (!isMatch) {
-    return res.status(401).json({ message: "Old password is incorrect" });
+  if (!folderPath) {
+    return res.status(400).json({ message: "folderPath is required" });
   }
-  user.password = await hashSync(newPassword);
-  await user.save();
-
-  if (req.jti && req.tokenExp) {
-    await TokenBlacklist.create({
-      tokenId: req.jti,
-      expiresAt: new Date(req.tokenExp * 1000),
-    });
+  const result = await clearFolderFromCloudinary(folderPath);
+  res.status(200).json({ message: "Folder cleared successfully", result });
+};
+// *************************************** delete folder from cloud ***********************************
+export const deleteCloudinaryFolder = async (req, res, next) => {
+  const { folderPath } = req.body;
+  if (!folderPath) {
+    return res.status(400).json({ message: "folderPath is required" });
   }
-
-  res.status(200).json({ message: "Password updated and current token revoked. Please login again." });
+  const result = await deleteFolderFromCloudinary(folderPath);
+  res.status(200).json({ message: "Folder deleted successfully", result });
 };

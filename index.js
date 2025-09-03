@@ -1,15 +1,52 @@
-import dotenv from "dotenv";
+import "./config.js";
 import express from "express";
 import connectDB from "./src/DB/db.connection.js";
-import UsersController from "./src/modules/Users/Users.Controller.js";
 import MessageController from "./src/modules/Message/Message.Controller.js";
+import helmet from "helmet";
+import cors from "cors";
+import { apiLimiter } from "./src/Middlewares/rate-limiter.middleware.js";
+import AuthController from "./src/modules/Users/controller/auth.Controller.js";
+import UserController from "./src/modules/Users/controller/Users.Controller.js";
+import { CronJob } from "cron";
+import { User } from "./src/DB/models/Users.js";
+import { Message } from "./src/DB/models/Message.js";
+import { TokenBlacklist } from "./src/DB/models/blacklistedTokens.js";
 
-dotenv.config();
+const whitelist = [process.env.WHITELISTED_DOMAINS, undefined];
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (whitelist.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+};
+
+const job = new CronJob("* * * * *", async () => {
+  const users = await User.find({ deletedAt: { $lte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } });
+  for (const u of users) {
+    if (u.profileImageHosted.public_id) {
+      await deleteFolderFromCloudinary(u.profileImageHosted.public_id);
+    }
+  }
+  await User.deleteMany({ deletedAt: { $lte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } });
+  await Message.deleteMany({ receiverId: { $in: users.map((user) => user._id) } });
+  await TokenBlacklist.deleteMany({ expiresAt: { $lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } });
+  console.log("Deleted users and their messages");
+});
+job.start();
+
 const app = express();
-const PORT = process.env.PORT;
 
+app.use("/uploads", express.static("uploads"));
+// app.use(apiLimiter);
+
+app.use(helmet());
+app.use(cors(corsOptions));
 app.use(express.json());
-app.use(UsersController);
+app.use(UserController);
+app.use(AuthController);
 app.use(MessageController);
 
 app.use(async (err, req, res, next) => {
@@ -29,7 +66,7 @@ app.use((req, res) => {
 });
 
 connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server is running on http://localhost:${PORT}`);
+  app.listen(process.env.PORT, () => {
+    console.log(`🚀 Server is running on http://localhost:${process.env.PORT}`);
   });
 });

@@ -46,6 +46,28 @@ export const makeMessagePublic = async (req, res, next) => {
   res.status(200).json({ message: "Message is now public", data: message });
 };
 
+// *************************************** get all public Messages ***********************************
+export const getAllPublicMessages = async (req, res, next) => {
+  const messages = await Message.find({ isPublic: true })
+    .populate([
+      {
+        path: "receiverId",
+        model: "User",
+        select: "firstName lastName email",
+      },
+    ])
+    .exec();
+
+  if (!messages.length) {
+    return next({ status: 404, message: "No public messages found" });
+  }
+
+  res.status(200).json({
+    message: "Public messages retrieved successfully",
+    data: messages,
+  });
+};
+
 // *************************************** getMessagesByName  ***********************************
 export const getMessagesByName = async (req, res, next) => {
   const messages = await Message.find()
@@ -85,4 +107,30 @@ export const deleteMessage = async (req, res, next) => {
   }
   await message.deleteOne();
   res.status(200).json({ message: "Message deleted successfully" });
+};
+
+// *************************************** getMessagesForLoggedInUser  ***********************************
+export const getMessagesForLoggedInUser = async (req, res, next) => {
+  const userId = req.userId;
+  if (!userId) {
+    return next({ status: 401, message: "Unauthorized: No user ID found" });
+  }
+  const messages = await Message.find({ receiverId: userId })
+    .populate([
+      {
+        path: "receiverId",
+        model: "User",
+        select: "firstName lastName email",
+      },
+    ])
+    .exec();
+
+  if (!messages.length) {
+    return next({ status: 404, message: "No messages found for this user" });
+  }
+
+  res.status(200).json({
+    message: "Messages for logged-in user retrieved successfully",
+    data: messages,
+  });
 };

@@ -1,6 +1,7 @@
 export const GenderEnum = {
   FEMALE: "female",
   MALE: "male",
+  Other: "other",
 };
 
 export const RoleEnum = {

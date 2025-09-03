@@ -18,8 +18,8 @@ export const authMiddleware = async (req, res, next) => {
     }
 
     const user = await User.findById(decoded.userId);
-    if (!user) {
-      return res.status(401).json({ message: "Unauthorized: User no longer exists" });
+    if (!user || user.deletedAt) {
+      return res.status(401).json({ message: "User account is deleted or not found" });
     }
 
     req.userId = decoded.userId;
